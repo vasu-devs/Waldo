@@ -1,0 +1,31 @@
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Lexend', sans-serif;
+}
+
+body {
+  @apply bg-brand-yellow text-brand-black;
+  margin: 0;
+  min-height: 100vh;
+}
+
+.sos-card {
+  @apply bg-white border-2 border-brand-black shadow-sos rounded-2xl;
+}
+
+.pill-container {
+  @apply bg-white rounded-pill shadow-pill border border-gray-100;
+}
+
+.btn-primary {
+  @apply bg-brand-purple text-white font-bold rounded-pill px-6 py-3 transition-transform hover:scale-105 active:scale-95;
+}
+
+.glass-nav {
+  @apply fixed top-6 left-1/2 -translate-x-1/2 z-50 w-[90%] max-w-4xl h-16 flex items-center justify-between px-6 bg-white/90 backdrop-blur-md rounded-pill border border-white/20 shadow-pill;
+}
