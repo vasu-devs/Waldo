@@ -15,7 +15,7 @@ cp .env.example .env
 ## Usage
 
 ```powershell
-python -m src.ingest --pdf-path <path_to_pdf> --output-dir ./output
+python -m backend.IngestScript.ingest --pdf-path <path_to_pdf> --output-dir ./output
 ```
 
 ## Architecture
@@ -23,3 +23,4 @@ python -m src.ingest --pdf-path <path_to_pdf> --output-dir ./output
 - **docling**: PDF parsing with table/figure extraction
 - **Gemini 2.0 Flash**: Transcription + self-correction verification
 - **Qdrant**: Vector storage with Shadow Text metadata
+

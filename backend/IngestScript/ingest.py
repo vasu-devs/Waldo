@@ -13,10 +13,10 @@ from pathlib import Path
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.config.settings import get_settings
-from src.services.pdf_parser import PDFParser, ElementType
-from src.services.gemini_transcriber import GeminiTranscriber
-from src.services.vector_store import VectorStore, DocumentMetadata
+from backend.IngestScript.config.settings import get_settings
+from backend.IngestScript.services.pdf_parser import PDFParser, ElementType
+from backend.IngestScript.services.gemini_transcriber import GeminiTranscriber
+from backend.IngestScript.services.vector_store import VectorStore, DocumentMetadata
 
 # Configure logging
 logging.basicConfig(
