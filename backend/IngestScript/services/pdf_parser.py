@@ -69,50 +69,126 @@ class PDFParser:
 
     def _chunk_text(self, text: str) -> list[str]:
         """
-        Split text into chunks using simple character-based chunking.
+        Split text into chunks using recursive character splitting.
+        
+        Attempts to split on semantic boundaries in order of priority:
+        1. Double newlines (paragraphs)
+        2. Single newlines (lines)
+        3. Sentence endings (. )
+        4. Spaces
         
         Args:
             text: The text to chunk.
             
         Returns:
-            List of text chunks.
+            List of text chunks with overlap.
         """
         text = text.strip()
         
-        # Keep as single chunk if document is small
-        if len(text) < self.min_doc_size_for_chunking:
-            logger.info(f"Document is small ({len(text)} chars), keeping as single chunk")
-            return [text] if text else []
+        if not text:
+            return []
         
-        # Character-based chunking with overlap
-        chunks = []
-        start = 0
+        # Try to use langchain-text-splitters if available
+        try:
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
+            
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap,
+                separators=["\n\n", "\n", ". ", " ", ""],
+                keep_separator=True,
+            )
+            chunks = splitter.split_text(text)
+            logger.info(f"Used LangChain splitter: {len(chunks)} chunks from {len(text)} chars")
+            return chunks
+            
+        except ImportError:
+            logger.info("langchain-text-splitters not installed, using pure Python implementation")
         
-        while start < len(text):
-            end = start + self.chunk_size
+        # Pure Python recursive character splitting
+        return self._smart_split(text, self.chunk_size, self.chunk_overlap)
+    
+    def _smart_split(self, text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+        """
+        Pure Python implementation of recursive character splitting.
+        
+        Args:
+            text: Text to split.
+            chunk_size: Maximum chunk size.
+            chunk_overlap: Overlap between chunks.
             
-            # Don't break mid-word if possible
-            if end < len(text):
-                # Look for a good break point (space, newline)
-                for i in range(min(50, end - start)):
-                    if text[end - i] in ' \n\t':
-                        end = end - i
-                        break
+        Returns:
+            List of text chunks.
+        """
+        separators = ["\n\n", "\n", ". ", " "]
+        
+        def split_recursive(text: str, sep_idx: int = 0) -> list[str]:
+            """Recursively split text using separators in priority order."""
+            if len(text) <= chunk_size:
+                return [text.strip()] if text.strip() else []
             
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            
-            # Move start forward, accounting for overlap
-            start = end - self.chunk_overlap
-            if start < 0:
+            if sep_idx >= len(separators):
+                # No more separators, hard split
+                chunks = []
                 start = 0
-            # Prevent infinite loop
-            if start >= len(text) - self.chunk_overlap:
-                break
+                while start < len(text):
+                    end = min(start + chunk_size, len(text))
+                    chunk = text[start:end].strip()
+                    if chunk:
+                        chunks.append(chunk)
+                    start = end - chunk_overlap if end < len(text) else len(text)
+                return chunks
+            
+            sep = separators[sep_idx]
+            parts = text.split(sep)
+            
+            if len(parts) == 1:
+                # Separator not found, try next
+                return split_recursive(text, sep_idx + 1)
+            
+            # Merge parts into chunks respecting size limit
+            chunks = []
+            current_chunk = ""
+            
+            for i, part in enumerate(parts):
+                # Re-add separator (except for last part)
+                part_with_sep = part + sep if i < len(parts) - 1 else part
                 
-        logger.info(f"Created {len(chunks)} chunks from {len(text)} chars (size={self.chunk_size}, overlap={self.chunk_overlap})")
-        return chunks
+                if not current_chunk:
+                    current_chunk = part_with_sep
+                elif len(current_chunk) + len(part_with_sep) <= chunk_size:
+                    current_chunk += part_with_sep
+                else:
+                    # Current chunk is full
+                    if current_chunk.strip():
+                        chunks.append(current_chunk.strip())
+                    
+                    # Start new chunk with overlap from previous
+                    if chunk_overlap > 0 and len(current_chunk) > chunk_overlap:
+                        overlap_text = current_chunk[-chunk_overlap:]
+                        current_chunk = overlap_text + part_with_sep
+                    else:
+                        current_chunk = part_with_sep
+                    
+                    # If single part exceeds chunk_size, split it recursively
+                    if len(current_chunk) > chunk_size:
+                        sub_chunks = split_recursive(current_chunk, sep_idx + 1)
+                        if sub_chunks:
+                            chunks.extend(sub_chunks[:-1])
+                            current_chunk = sub_chunks[-1] if sub_chunks else ""
+            
+            # Don't forget the last chunk
+            if current_chunk.strip():
+                if len(current_chunk) > chunk_size:
+                    chunks.extend(split_recursive(current_chunk, sep_idx + 1))
+                else:
+                    chunks.append(current_chunk.strip())
+            
+            return chunks
+        
+        result = split_recursive(text)
+        logger.info(f"Smart split: {len(result)} chunks from {len(text)} chars (size={chunk_size}, overlap={chunk_overlap})")
+        return result
 
     def parse(self, pdf_path: Path) -> list[ExtractedElement]:
         """
