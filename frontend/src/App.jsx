@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Send, ChevronRight, User, Upload, FileText, Loader2, Image as ImageIcon, Plus, CheckCircle2, XCircle } from 'lucide-react'
+import { Send, ChevronRight, User, Upload, FileText, Loader2, Image as ImageIcon, Plus, CheckCircle2, XCircle, Trash2 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import logo from './assets/logo.png'
@@ -216,6 +216,7 @@ export default function App() {
     const [input, setInput] = useState("")
     const [isThinking, setIsThinking] = useState(false)
     const [isUploading, setIsUploading] = useState(false)
+    const [isResetting, setIsResetting] = useState(false)
     const scrollRef = useRef(null)
     const fileInputRef = useRef(null)
 
@@ -260,6 +261,43 @@ export default function App() {
 
     const triggerUpload = () => {
         fileInputRef.current?.click();
+    }
+
+    const handleReset = async () => {
+        if (!confirm("Are you sure? This will clear all uploaded documents and chat history.")) {
+            return;
+        }
+
+        setIsResetting(true);
+
+        try {
+            const response = await fetch("http://localhost:8000/reset", {
+                method: "DELETE",
+            });
+
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            const data = await response.json();
+            console.log("Reset response:", data);
+
+            // Clear local chat state
+            setMessages([{
+                text: "🔄 **System Reset Complete!** Ready for a new document.",
+                isBot: true
+            }]);
+            setInput("");
+
+        } catch (error) {
+            console.error("Reset error:", error);
+            setMessages(prev => [...prev, {
+                text: `❌ **Reset Error:** ${error.message}`,
+                isBot: true
+            }]);
+        } finally {
+            setIsResetting(false);
+        }
     }
 
     const handleFileChange = async (e) => {
@@ -340,8 +378,18 @@ export default function App() {
                         onClick={triggerUpload}
                         disabled={isUploading}
                         className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-500 hover:bg-[#F3F0FF] hover:text-[#6750A4] transition-colors flex-shrink-0"
+                        title="Upload PDF"
                     >
                         {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Plus size={24} />}
+                    </button>
+
+                    <button
+                        onClick={handleReset}
+                        disabled={isResetting}
+                        className="w-10 h-10 rounded-full flex items-center justify-center bg-red-50 text-red-500 hover:bg-red-100 transition-colors flex-shrink-0"
+                        title="Reset System"
+                    >
+                        {isResetting ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
                     </button>
 
                     <div className="relative flex-1">

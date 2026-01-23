@@ -124,6 +124,37 @@ async def root():
 async def health_check():
     return {"status": "ok", "cuda": "enabled" if vector_store else "unknown"}
 
+
+@app.delete("/reset")
+async def reset_system():
+    """
+    Reset the entire knowledge base for a fresh demo.
+    
+    Deletes and recreates the Qdrant collection.
+    """
+    try:
+        logger.info("Resetting knowledge base...")
+        
+        # Delete the collection
+        vector_store.client.delete_collection(
+            collection_name=settings.qdrant_collection_name
+        )
+        logger.info(f"Deleted collection: {settings.qdrant_collection_name}")
+        
+        # Recreate empty collection
+        vector_store._ensure_collection()
+        logger.info(f"Recreated collection: {settings.qdrant_collection_name}")
+        
+        # Clear ingestion status tracking
+        ingestion_status.clear()
+        
+        return {"status": "success", "message": "Knowledge base cleared. Ready for new document."}
+        
+    except Exception as e:
+        logger.error(f"Reset failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/ingestion-status/{filename}")
 async def get_ingestion_status(filename: str):
     return ingestion_status.get(filename, {"status": "unknown", "message": "File not found"})
