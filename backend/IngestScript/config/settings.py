@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Google AI Configuration
+    # Google AI Configuration (for image transcription only)
     google_api_key: str = Field(
         ...,
         description="Google AI API key for Gemini access",
@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     gemini_model: str = Field(
         default="gemini-2.0-flash",
         description="Gemini model to use for transcription",
+    )
+
+    # Groq Configuration (for chat/RAG)
+    groq_api_key: str = Field(
+        ...,
+        description="Groq API key for chat/RAG",
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model to use for chat",
     )
 
     # Qdrant Configuration

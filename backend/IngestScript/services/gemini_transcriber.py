@@ -186,3 +186,23 @@ class GeminiTranscriber:
             was_corrected=was_corrected,
             image_path=image_path,
         )
+
+    async def generate_summary(self, full_text: str) -> str:
+        """
+        Generate a preview summary of the document text (LOCAL, no API call).
+
+        Args:
+            full_text: The concatenated text content of the entire document.
+
+        Returns:
+            A preview summary using the first 1,500 characters of the document.
+        """
+        logger.info("Generating local preview summary (no API call)...")
+
+        # Take first 1,500 characters as preview
+        preview = full_text[:1500].strip()
+        
+        summary = f"DOCUMENT PREVIEW / EXECUTIVE SUMMARY:\n{preview}"
+        
+        logger.info(f"Generated local summary: {len(summary)} chars")
+        return summary

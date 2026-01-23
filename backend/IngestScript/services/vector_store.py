@@ -1,13 +1,11 @@
 """
 Vector Store service using Qdrant.
 
-Stores document vectors with Shadow Text metadata.
+Stores document vectors with Shadow Text metadata using real embeddings.
 """
 
 import logging
 import uuid
-from dataclasses import dataclass
-from pathlib import Path
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -15,26 +13,37 @@ from qdrant_client.models import (
     PointStruct,
     VectorParams,
 )
+from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
 class DocumentMetadata:
     """Metadata for a document element stored in Qdrant."""
-    shadow_text: str
-    original_image_path: str
-    element_type: str
-    source_pdf: str
-    page_number: int
+    
+    def __init__(
+        self,
+        shadow_text: str,
+        original_image_path: str | None,
+        element_type: str,
+        source_pdf: str,
+        page_number: int,
+        keywords: str | None = None,
+    ) -> None:
+        self.shadow_text = shadow_text
+        self.original_image_path = original_image_path
+        self.element_type = element_type
+        self.source_pdf = source_pdf
+        self.page_number = page_number
+        self.keywords = keywords
 
 
 class VectorStore:
     """Service for storing vectors and metadata in Qdrant."""
 
-    # Dummy vector dimension (we're storing metadata primarily)
-    # In production, this would be the embedding dimension
+    # all-MiniLM-L6-v2 outputs 384-dim vectors
     VECTOR_DIM = 384
+    EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
     def __init__(
         self,
@@ -52,9 +61,17 @@ class VectorStore:
         """
         self.collection_name = collection_name
         
+        # Initialize embedding model
+        logger.info(f"Loading embedding model: {self.EMBEDDING_MODEL}")
+        self.embedder = SentenceTransformer(self.EMBEDDING_MODEL)
+        
         try:
-            self.client = QdrantClient(host=host, port=port)
-            logger.info(f"Connected to Qdrant at {host}:{port}")
+            if host == ":memory:":
+                self.client = QdrantClient(":memory:")
+                logger.info("Connected to in-memory Qdrant")
+            else:
+                self.client = QdrantClient(host=host, port=port)
+                logger.info(f"Connected to Qdrant at {host}:{port}")
         except Exception as e:
             logger.warning(f"Could not connect to Qdrant server: {e}")
             logger.info("Using in-memory Qdrant client for local development")
@@ -79,15 +96,18 @@ class VectorStore:
         else:
             logger.info(f"Collection already exists: {self.collection_name}")
 
-    def _generate_dummy_vector(self) -> list[float]:
+    def _embed_text(self, text: str) -> list[float]:
         """
-        Generate a placeholder vector.
+        Generate embedding vector for text.
         
-        In production, this would use an embedding model.
-        For now, we use random values as the focus is on metadata storage.
+        Args:
+            text: Text to embed.
+            
+        Returns:
+            Embedding vector.
         """
-        import random
-        return [random.uniform(-1, 1) for _ in range(self.VECTOR_DIM)]
+        embedding = self.embedder.encode(text, convert_to_numpy=True)
+        return embedding.tolist()
 
     def upsert_document(self, metadata: DocumentMetadata) -> str:
         """
@@ -107,11 +127,15 @@ class VectorStore:
             "element_type": metadata.element_type,
             "source_pdf": metadata.source_pdf,
             "page_number": metadata.page_number,
+            "keywords": metadata.keywords,
         }
+
+        # Generate real embedding from shadow text
+        vector = self._embed_text(metadata.shadow_text)
 
         point = PointStruct(
             id=doc_id,
-            vector=self._generate_dummy_vector(),
+            vector=vector,
             payload=payload,
         )
 
@@ -124,6 +148,53 @@ class VectorStore:
             f"Stored document {doc_id}: {metadata.element_type} from page {metadata.page_number}"
         )
         return doc_id
+
+    def search(self, query: str, limit: int = 5) -> list[dict]:
+        """
+        Search for documents similar to the query.
+        
+        Args:
+            query: Search query text.
+            limit: Maximum number of results.
+            
+        Returns:
+            List of matching documents with scores.
+        """
+        query_vector = self._embed_text(query)
+        print(f"DEBUG: Searching Qdrant with vector length: {len(query_vector)}")
+        
+        try:
+            # Try qdrant-client v1.7+ API first (query_points)
+            if hasattr(self.client, 'query_points'):
+                from qdrant_client.models import models
+                results = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=query_vector,
+                    limit=limit,
+                    with_payload=True,
+                ).points
+            else:
+                # Fallback to older .search() API
+                results = self.client.search(
+                    collection_name=self.collection_name,
+                    query_vector=query_vector,
+                    limit=limit,
+                    with_payload=True,
+                )
+        except Exception as e:
+            print(f"\n{'='*60}\nCRITICAL SEARCH ERROR: {e}\n{'='*60}\n")
+            logger.error(f"Qdrant search failed: {e}", exc_info=True)
+            return []
+        
+        documents = []
+        for hit in results:
+            documents.append({
+                "id": str(hit.id),
+                "score": hit.score,
+                **hit.payload,
+            })
+        
+        return documents
 
     def get_all_documents(self) -> list[dict]:
         """

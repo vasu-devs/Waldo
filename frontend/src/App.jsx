@@ -1,9 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Send, Zap, ChevronRight, User, Bot, Sparkles, Image as ImageIcon } from 'lucide-react'
+import { Send, ChevronRight, User, Upload, FileText, Loader2, Image as ImageIcon, Plus, CheckCircle2, XCircle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import ReactMarkdown from 'react-markdown'
 import logo from './assets/logo.png'
 import avatar from './assets/avatar.png'
+
+const API_URL = "http://localhost:8000";
 
 const Header = () => (
     <header className="glass-header">
@@ -26,7 +28,122 @@ const Header = () => (
     </header>
 )
 
-const Message = ({ isBot, text, image, imageAlt }) => (
+const IngestionProgress = ({ filename }) => {
+    const [status, setStatus] = useState("queued");
+    const [message, setMessage] = useState("Starting upload...");
+    const [progress, setProgress] = useState(0);
+    const [stats, setStats] = useState({ current: 0, total: 0 });
+
+    useEffect(() => {
+        let pollInterval;
+
+        const checkStatus = async () => {
+            try {
+                const res = await fetch(`${API_URL}/ingestion-status/${filename}`);
+                const data = await res.json();
+
+                setStatus(data.status);
+                setMessage(data.message);
+
+                if (data.current && data.total) {
+                    setStats({ current: data.current, total: data.total });
+                    if (data.progress) setProgress(data.progress);
+                }
+
+                if (data.status === "processing" && !data.progress) {
+                    // Fallback fake progress if backend not reporting yet
+                    setProgress(prev => Math.min(prev + 5, 90));
+                } else if (data.status === "completed") {
+                    setProgress(100);
+                    clearInterval(pollInterval);
+                } else if (data.status === "error") {
+                    clearInterval(pollInterval);
+                }
+            } catch (e) {
+                console.error("Polling error", e);
+            }
+        };
+
+        pollInterval = setInterval(checkStatus, 1000);
+        return () => clearInterval(pollInterval);
+    }, [filename]);
+
+    // Calculate Estimated Time (5s per item heuristic)
+    const itemsLeft = stats.total - stats.current;
+    const estTime = itemsLeft > 0 ? `${itemsLeft * 5}s` : "Calculating...";
+    const isComplete = status === "completed";
+    const isError = status === "error";
+
+    // SVG Constants
+    const radius = 18;
+    const circumference = 2 * Math.PI * radius;
+    const offset = circumference - (progress / 100) * circumference;
+
+    return (
+        <div className="w-full bg-white border border-gray-200 rounded-xl p-4 mb-4 shadow-sm flex items-center gap-4 relative overflow-hidden">
+            {/* Custom SVG Progress */}
+            <div className="relative w-12 h-12 flex-shrink-0 flex items-center justify-center">
+                <svg className="transform -rotate-90 w-12 h-12">
+                    <circle
+                        cx="24" cy="24" r={radius}
+                        stroke="#F3F0FF" strokeWidth="4" fill="transparent"
+                    />
+                    {!isError && (
+                        <circle
+                            cx="24" cy="24" r={radius}
+                            stroke="#6750A4" strokeWidth="4" fill="transparent"
+                            strokeDasharray={circumference}
+                            strokeDashoffset={offset}
+                            strokeLinecap="round"
+                            className="transition-all duration-500 ease-out"
+                        />
+                    )}
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center text-[10px] font-bold text-[#6750A4]">
+                    {isError ? <XCircle size={16} className="text-red-500" /> : isComplete ? <CheckCircle2 size={16} className="text-green-500" /> : `${Math.round(progress)}%`}
+                </div>
+            </div>
+
+            <div className="flex-1 min-w-0 z-10">
+                <div className="flex justify-between items-start">
+                    <h4 className="font-semibold text-sm text-gray-900 truncate">{filename}</h4>
+                    {status === "processing" && stats.total > 0 && (
+                        <span className="text-[10px] font-medium bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full">
+                            Est: ~{estTime}
+                        </span>
+                    )}
+                </div>
+                <p className="text-xs text-gray-500 mt-0.5 truncate">{message}</p>
+                {status === "processing" && (
+                    <div className="mt-1 flex items-center gap-2">
+                        <div className="flex space-x-1">
+                            {[...Array(3)].map((_, i) => (
+                                <motion.div
+                                    key={i}
+                                    className="w-1 h-1 bg-purple-400 rounded-full"
+                                    animate={{ opacity: [0.3, 1, 0.3] }}
+                                    transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+                                />
+                            ))}
+                        </div>
+                        <span className="text-[10px] text-gray-400">Processing...</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Background Decoration */}
+            {status === "processing" && (
+                <motion.div
+                    className="absolute inset-0 bg-gradient-to-r from-transparent via-purple-50/20 to-transparent"
+                    animate={{ x: ['-100%', '200%'] }}
+                    transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                />
+            )}
+        </div>
+    );
+};
+
+const Message = ({ isBot, text, documents, ingestionFile }) => (
     <motion.div
         initial={{ opacity: 0, y: 15 }}
         animate={{ opacity: 1, y: 0 }}
@@ -40,18 +157,35 @@ const Message = ({ isBot, text, image, imageAlt }) => (
         )}
 
         <div className={`max-w-[80%] sm:max-w-[70%] ${isBot ? 'bot-bubble' : 'user-bubble'}`}>
-            <div className="prose prose-sm max-w-none">
-                <ReactMarkdown>{text}</ReactMarkdown>
-            </div>
+            {ingestionFile ? (
+                <IngestionProgress filename={ingestionFile} />
+            ) : (
+                <div className="prose prose-sm max-w-none">
+                    <ReactMarkdown>{text}</ReactMarkdown>
+                </div>
+            )}
 
-            {image && (
-                <div className="multimodal-container bg-gray-50 p-2 mt-4">
-                    <img src={image} alt={imageAlt} className="w-full h-auto rounded-lg" />
-                    {imageAlt && (
-                        <div className="mt-2 px-1 flex items-center gap-2 text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
-                            <Sparkles size={12} className="text-[#6750A4]" /> {imageAlt}
-                        </div>
-                    )}
+            {/* Render Retrieved Documents/Images */}
+            {documents && documents.length > 0 && (
+                <div className="mt-4 space-y-3">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Sources & Evidence</p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {documents.map((doc, idx) => (
+                            <div key={idx} className="bg-white/50 border border-gray-200 rounded-lg p-2 flex flex-col gap-2">
+                                {doc.original_image_path && (
+                                    <div className="relative aspect-video rounded-md overflow-hidden bg-gray-100">
+                                        <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+                                            <ImageIcon size={20} />
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="text-[10px] text-gray-500 flex items-center gap-1">
+                                    <FileText size={10} />
+                                    <span className="truncate">Page {doc.page_number} • {doc.element_type}</span>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
         </div>
@@ -77,17 +211,19 @@ const LoadingState = () => (
 
 export default function App() {
     const [messages, setMessages] = useState([
-        { text: "Hello! I'm your **Multimodal RAG Assistant**. I can help you analyze documents, visualize data, and answer complex queries with precision.\n\nHow can I support your research today?", isBot: true }
+        { text: "Hello! I'm your **Multimodal RAG Assistant**. Upload a PDF to get started, then ask me anything about it!", isBot: true }
     ])
     const [input, setInput] = useState("")
     const [isThinking, setIsThinking] = useState(false)
+    const [isUploading, setIsUploading] = useState(false)
     const scrollRef = useRef(null)
+    const fileInputRef = useRef(null)
 
     useEffect(() => {
         scrollRef.current?.scrollIntoView({ behavior: 'smooth' })
     }, [messages, isThinking])
 
-    const handleSend = () => {
+    const handleSend = async () => {
         if (!input.trim()) return
 
         const userMsg = { text: input, isBot: false }
@@ -95,21 +231,98 @@ export default function App() {
         setInput("")
         setIsThinking(true)
 
-        // Mock API response
-        setTimeout(() => {
+        try {
+            const response = await fetch(`${API_URL}/chat`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ query: userMsg.text })
+            });
+
+            if (!response.ok) throw new Error("Failed to fetch response");
+
+            const data = await response.json();
+
             setMessages(prev => [...prev, {
-                text: "I've analyzed the financial report as requested. Based on the quarterly projections, we're seeing strong growth in operational efficiency. \n\nHere is the **Resource Allocation Map** derived from the source documents:",
-                image: "https://images.unsplash.com/photo-1551288049-bbbda536ad89?auto=format&fit=crop&q=80&w=1000",
-                imageAlt: "Quarterly Growth Vector Analysis",
+                text: data.response,
+                documents: data.documents,
                 isBot: true
-            }])
-            setIsThinking(false)
-        }, 1800)
+            }]);
+        } catch (error) {
+            console.error("Chat error:", error);
+            setMessages(prev => [...prev, {
+                text: "**Error:** Could not connect to the AI. Is the backend running?",
+                isBot: true
+            }]);
+        } finally {
+            setIsThinking(false);
+        }
+    }
+
+    const triggerUpload = () => {
+        fileInputRef.current?.click();
+    }
+
+    const handleFileChange = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        setIsUploading(true);
+        const formData = new FormData();
+        formData.append("file", file);
+
+        try {
+            // Add a temporary "system" message for the upload progress
+            setMessages(prev => [...prev, {
+                isBot: true,
+                ingestionFile: file.name
+            }]);
+
+            // Explicit backend URL, no Content-Type header (browser handles multipart boundary)
+            const response = await fetch("http://localhost:8000/ingest", {
+                method: "POST",
+                body: formData
+            });
+
+            // Strict error check: throw if not 200 OK
+            if (!response.ok) {
+                throw new Error(await response.text());
+            }
+
+            // Parse and log server response for debugging
+            const data = await response.json();
+            console.log("Ingest server response:", data);
+
+            // Success: IngestionProgress component will handle polling updates
+            setMessages(prev => [...prev, {
+                text: `✅ **Ingestion complete!** File "${file.name}" has been processed.`,
+                isBot: true
+            }]);
+
+        } catch (error) {
+            console.error("Upload error:", error);
+            // Surface error in UI
+            setMessages(prev => [...prev, {
+                text: `❌ **Upload Error:** ${error.message}`,
+                isBot: true
+            }]);
+        } finally {
+            setIsUploading(false);
+            if (fileInputRef.current) fileInputRef.current.value = "";
+        }
     }
 
     return (
         <div className="min-h-screen">
             <Header />
+
+            {/* Hidden File Input */}
+            <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileChange}
+                accept="application/pdf"
+                className="hidden"
+            />
 
             <main className="chat-container">
                 <AnimatePresence>
@@ -122,17 +335,29 @@ export default function App() {
             </main>
 
             <div className="input-wrapper">
-                <div className="relative">
-                    <input
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                        placeholder="Ask a question about your documents..."
-                        className="input-field"
-                    />
-                    <button onClick={handleSend} className="btn-send">
-                        <Send size={20} />
+                <div className="relative flex items-center gap-2">
+                    <button
+                        onClick={triggerUpload}
+                        disabled={isUploading}
+                        className="w-10 h-10 rounded-full flex items-center justify-center bg-gray-100 text-gray-500 hover:bg-[#F3F0FF] hover:text-[#6750A4] transition-colors flex-shrink-0"
+                    >
+                        {isUploading ? <Loader2 size={20} className="animate-spin" /> : <Plus size={24} />}
                     </button>
+
+                    <div className="relative flex-1">
+                        <input
+                            value={input}
+                            onChange={(e) => setInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                            placeholder="Ask a question about your documents..."
+                            className="input-field"
+                            style={{ paddingLeft: '1rem' }}
+                            disabled={isThinking}
+                        />
+                        <button onClick={handleSend} disabled={isThinking} className="btn-send absolute right-2 top-1/2 -translate-y-1/2">
+                            <Send size={20} />
+                        </button>
+                    </div>
                 </div>
                 <p className="text-center mt-4 text-[11px] text-gray-400 font-medium">
                     Powered by Multimodal RAG • SOS 42 AI Engine

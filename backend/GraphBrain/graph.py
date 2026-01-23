@@ -3,20 +3,36 @@ Graph Brain - LangGraph State Machine for Agentic RAG.
 
 Implements a multi-node pipeline with:
 - retrieve: Fetch docs from Qdrant
-- grade_documents: Gemini 2.0 relevance grading
-- generate: Multimodal generation with text + images
+- grade_documents: Groq LLM relevance grading
+- generate: LLM generation with context
 - rewrite_query: Query transformation when all docs are irrelevant
+
+Uses Groq for all LLM operations.
 """
 
 import logging
+import re
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from google import genai
-from google.genai import types
+from groq import Groq
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# GREETING PATTERNS
+# =============================================================================
+
+GREETING_PATTERNS: list[str] = [
+    r"^\s*(hi|hey|hello|hola|sup|yo)\s*[!.,?]*\s*$",
+    r"^\s*(good\s*(morning|afternoon|evening))\s*[!.,?]*\s*$",
+    r"^\s*what'?s\s*up\s*[!.,?]*\s*$",
+    r"^\s*how\s*are\s*you\s*[!.,?]*\s*$",
+    r"^\s*help\s*[!.,?]*\s*$",
+    r"^\s*(thanks|thank\s*you)\s*[!.,?]*\s*$",
+]
 
 
 # =============================================================================
@@ -27,7 +43,7 @@ class Document(TypedDict):
     """A retrieved document from the vector store."""
     id: str
     shadow_text: str
-    original_image_path: str
+    original_image_path: str | None
     element_type: str
     source_pdf: str
     page_number: int
@@ -61,45 +77,42 @@ class GraphNodes:
     """
     Container for all graph node implementations.
     
-    Uses Gemini 2.0 Flash for fast grading and generation.
+    Uses Groq for fast LLM operations.
     """
     
     MAX_RETRIES = 2
-    TOP_K = 5
+    TOP_K = 10  # Retrieve more documents for better context coverage
     
     def __init__(
         self,
-        api_key: str,
+        groq_api_key: str,
         qdrant_host: str = "localhost",
         qdrant_port: int = 6333,
         collection_name: str = "pdf_documents",
-        model_name: str = "gemini-2.0-flash",
+        model_name: str = "llama-3.3-70b-versatile",
     ) -> None:
         """
         Initialize graph nodes with required clients.
         
         Args:
-            api_key: Google AI API key.
+            groq_api_key: Groq API key.
             qdrant_host: Qdrant server host.
             qdrant_port: Qdrant server port.
             collection_name: Qdrant collection name.
-            model_name: Gemini model to use.
+            model_name: Groq model to use.
         """
-        # Initialize Gemini client
-        self.client = genai.Client(api_key=api_key)
+        # Initialize Groq client
+        self.client = Groq(api_key=groq_api_key)
         self.model_name = model_name
         
-        # Initialize Qdrant
-        from qdrant_client import QdrantClient
-        try:
-            self.qdrant = QdrantClient(host=qdrant_host, port=qdrant_port)
-            logger.info(f"Connected to Qdrant at {qdrant_host}:{qdrant_port}")
-        except Exception as e:
-            logger.warning(f"Could not connect to Qdrant: {e}")
-            logger.info("Using in-memory Qdrant for development")
-            self.qdrant = QdrantClient(":memory:")
-        
-        self.collection_name = collection_name
+        # Initialize VectorStore (handles Qdrant + embeddings)
+        from backend.IngestScript.services.vector_store import VectorStore
+        self.vector_store = VectorStore(
+            host=qdrant_host,
+            port=qdrant_port,
+            collection_name=collection_name,
+        )
+        logger.info(f"Connected to Qdrant at {qdrant_host}:{qdrant_port}")
     
     # -------------------------------------------------------------------------
     # RETRIEVE NODE
@@ -107,7 +120,7 @@ class GraphNodes:
     
     def retrieve(self, state: GraphState) -> GraphState:
         """
-        Fetch documents from Qdrant based on the query.
+        Fetch documents from Qdrant based on the query using semantic search.
         
         Args:
             state: Current graph state with query.
@@ -119,25 +132,21 @@ class GraphNodes:
         logger.info(f"[RETRIEVE] Query: '{query}'")
         
         try:
-            result = self.qdrant.scroll(
-                collection_name=self.collection_name,
-                limit=self.TOP_K,
-                with_payload=True,
-                with_vectors=False,
-            )
+            # Use semantic search
+            results = self.vector_store.search(query=query, limit=self.TOP_K)
             
             documents: list[Document] = []
-            for point in result[0]:
-                doc: Document = {
-                    "id": str(point.id),
-                    "shadow_text": point.payload.get("shadow_text", ""),
-                    "original_image_path": point.payload.get("original_image_path", ""),
-                    "element_type": point.payload.get("element_type", ""),
-                    "source_pdf": point.payload.get("source_pdf", ""),
-                    "page_number": point.payload.get("page_number", 0),
-                    "relevance_score": 0.0,
+            for doc in results:
+                document: Document = {
+                    "id": str(doc.get("id", "")),
+                    "shadow_text": doc.get("shadow_text", ""),
+                    "original_image_path": doc.get("original_image_path"),
+                    "element_type": doc.get("element_type", ""),
+                    "source_pdf": doc.get("source_pdf", ""),
+                    "page_number": doc.get("page_number", 0),
+                    "relevance_score": doc.get("score", 0.0),
                 }
-                documents.append(doc)
+                documents.append(document)
             
             logger.info(f"[RETRIEVE] Found {len(documents)} documents")
             
@@ -157,7 +166,7 @@ class GraphNodes:
     
     def grade_documents(self, state: GraphState) -> GraphState:
         """
-        Grade each document for relevance using Gemini 2.0 Flash.
+        Grade each document for relevance using Groq LLM.
         
         Uses fast binary grading: 'yes' or 'no'.
         
@@ -174,29 +183,50 @@ class GraphNodes:
         
         relevant_documents: list[Document] = []
         
+        # FAIL-SAFE: Generic queries auto-accept ALL documents (skip LLM)
+        generic_keywords = [
+            "summary", "summarize", "what is this", "about", "describe",
+            "explain", "overview", "tell me", "what does", "content",
+        ]
+        query_lower = query.lower()
+        is_generic_query = any(kw in query_lower for kw in generic_keywords)
+        
+        if is_generic_query:
+            logger.info(f"[GRADE] Generic query detected: '{query}' -> auto-accepting ALL documents")
+            for doc in documents:
+                doc["relevance_score"] = 1.0
+                relevant_documents.append(doc)
+            return {
+                **state,
+                "relevant_documents": relevant_documents,
+            }
+        
         for doc in documents:
-            prompt = f"""You are a relevance grader. Your task is to determine if a document is relevant to a user query.
+            prompt = f"""You are a HIGH-RECALL relevance grader. Your goal is to NEVER miss relevant documents.
+
+RULES:
+1. If the document contains ANY keywords from the user question, answer 'yes'.
+2. If the document is even REMOTELY related, answer 'yes'.
+3. If you are unsure, answer 'yes'.
+4. Only answer 'no' if the document is COMPLETELY unrelated.
 
 User Query: {query}
 
 Document Content:
 {doc['shadow_text'][:2000]}
 
-Is this document relevant to answering the user's query? 
-Answer with ONLY 'yes' or 'no'. Nothing else."""
+Is this document relevant? Answer ONLY 'yes' or 'no'."""
 
             try:
-                response = self.client.models.generate_content(
+                response = self.client.chat.completions.create(
                     model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.0,
-                        max_output_tokens=10,
-                    ),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=10,
                 )
                 
-                grade = response.text.strip().lower()
-                is_relevant = grade == "yes"
+                grade = response.choices[0].message.content.strip().lower()
+                is_relevant = grade == "yes" or grade.startswith("yes")
                 
                 logger.info(
                     f"[GRADE] Doc {doc['id'][:8]}... "
@@ -209,6 +239,7 @@ Answer with ONLY 'yes' or 'no'. Nothing else."""
                     
             except Exception as e:
                 logger.error(f"[GRADE] Error grading doc {doc['id']}: {e}")
+                # On error, include the document (fail-safe)
                 relevant_documents.append(doc)
         
         logger.info(f"[GRADE] {len(relevant_documents)}/{len(documents)} relevant")
@@ -219,14 +250,12 @@ Answer with ONLY 'yes' or 'no'. Nothing else."""
         }
     
     # -------------------------------------------------------------------------
-    # GENERATE NODE (Multimodal)
+    # GENERATE NODE
     # -------------------------------------------------------------------------
     
     def generate(self, state: GraphState) -> GraphState:
         """
-        Generate final answer using Gemini 2.0 with relevant docs + images.
-        
-        Passes both text (shadow_text) and image paths for multimodal RAG.
+        Generate final answer using Groq with relevant docs.
         
         Args:
             state: Current graph state with relevant_documents.
@@ -240,67 +269,41 @@ Answer with ONLY 'yes' or 'no'. Nothing else."""
         logger.info(f"[GENERATE] Using {len(docs)} relevant documents")
         
         context_parts = []
-        image_parts = []
         
         for i, doc in enumerate(docs, 1):
             context_parts.append(
                 f"--- Document {i} ({doc['element_type']}, Page {doc['page_number']}) ---\n"
                 f"{doc['shadow_text']}\n"
             )
-            
-            if doc["original_image_path"]:
-                try:
-                    from pathlib import Path
-                    img_path = Path(doc["original_image_path"])
-                    if img_path.exists():
-                        with open(img_path, "rb") as f:
-                            image_data = f.read()
-                        
-                        suffix = img_path.suffix.lower()
-                        mime_type = {
-                            ".png": "image/png",
-                            ".jpg": "image/jpeg",
-                            ".jpeg": "image/jpeg",
-                            ".webp": "image/webp",
-                        }.get(suffix, "image/png")
-                        
-                        image_parts.append(
-                            types.Part.from_bytes(data=image_data, mime_type=mime_type)
-                        )
-                        logger.info(f"[GENERATE] Loaded image: {img_path.name}")
-                except Exception as e:
-                    logger.warning(f"[GENERATE] Could not load image: {e}")
         
         context = "\n".join(context_parts)
         
-        prompt = f"""You are a helpful assistant answering questions based on provided documents.
+        prompt = f"""You are an expert synthesizer. You have been given multiple fragments of a document.
+Your job is to combine them into a single, fluid, coherent narrative.
 
-Context Documents:
+RULES:
+1. Do NOT say 'Document 1 says X' or 'According to the text' or 'Based on the fragments'.
+2. Just answer the question directly and comprehensively.
+3. If the fragments seem disjointed, use your reasoning to stitch them together logically.
+4. If you cannot answer from the provided content, say so clearly.
+5. Be thorough but avoid unnecessary repetition.
+
+Document Fragments:
 {context}
 
 User Question: {query}
 
-Instructions:
-1. Answer based ONLY on the provided documents.
-2. If the documents contain relevant tables or figures, reference them.
-3. If you cannot answer from the documents, say so clearly.
-4. Be concise but thorough.
-
 Answer:"""
 
         try:
-            content_parts = [prompt] + image_parts
-            
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model_name,
-                contents=content_parts,
-                config=types.GenerateContentConfig(
-                    temperature=0.7,
-                    max_output_tokens=2048,
-                ),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=2048,
             )
             
-            generation = response.text
+            generation = response.choices[0].message.content
             logger.info(f"[GENERATE] Generated {len(generation)} chars")
             
         except Exception as e:
@@ -345,16 +348,14 @@ Original Query: {original_query}
 Rewritten Query (output ONLY the new query, nothing else):"""
 
         try:
-            response = self.client.models.generate_content(
+            response = self.client.chat.completions.create(
                 model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.5,
-                    max_output_tokens=100,
-                ),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=100,
             )
             
-            rewritten = response.text.strip()
+            rewritten = response.choices[0].message.content.strip()
             logger.info(f"[REWRITE] '{original_query}' -> '{rewritten}'")
             
         except Exception as e:
@@ -366,11 +367,83 @@ Rewritten Query (output ONLY the new query, nothing else):"""
             "rewritten_query": rewritten,
             "retry_count": retry_count + 1,
         }
+    
+    # -------------------------------------------------------------------------
+    # DIRECT RESPONSE NODE (for greetings)
+    # -------------------------------------------------------------------------
+    
+    def direct_response(self, state: GraphState) -> GraphState:
+        """
+        Handle greetings and simple queries without RAG.
+        
+        Returns a friendly response prompting user to upload a document.
+        
+        Args:
+            state: Current graph state.
+            
+        Returns:
+            Updated state with generation (direct response).
+        """
+        query = state["query"]
+        logger.info(f"[DIRECT_RESPONSE] Handling greeting: '{query}'")
+        
+        response = (
+            "Hello! I am ready to help. Please ask me about your document."
+        )
+        
+        return {
+            **state,
+            "generation": response,
+            "documents": [],
+            "relevant_documents": [],
+        }
 
 
 # =============================================================================
 # CONDITIONAL EDGES
 # =============================================================================
+
+def _is_greeting(query: str) -> bool:
+    """
+    Check if query matches known greeting patterns.
+    
+    Args:
+        query: User input query.
+        
+    Returns:
+        True if query is a greeting, False otherwise.
+    """
+    query_lower = query.lower().strip()
+    
+    for pattern in GREETING_PATTERNS:
+        if re.match(pattern, query_lower, re.IGNORECASE):
+            return True
+    
+    return False
+
+
+def route_query(state: GraphState) -> str:
+    """
+    Route query to appropriate node based on classification.
+    
+    Routes greetings to 'direct_response' and questions to 'retrieve'.
+    
+    Args:
+        state: Current graph state with query.
+        
+    Returns:
+        'direct_response' for greetings.
+        'retrieve' for RAG questions.
+    """
+    query = state["query"]
+    
+    if _is_greeting(query):
+        logger.info(f"[ROUTER] Greeting detected: '{query}' -> direct_response")
+        return "direct_response"
+    else:
+        logger.info(f"[ROUTER] RAG query: '{query}' -> retrieve")
+        return "retrieve"
+
 
 def should_rewrite_or_generate(state: GraphState) -> str:
     """
@@ -399,27 +472,27 @@ def should_rewrite_or_generate(state: GraphState) -> str:
 # =============================================================================
 
 def build_graph(
-    api_key: str,
+    groq_api_key: str,
     qdrant_host: str = "localhost",
     qdrant_port: int = 6333,
     collection_name: str = "pdf_documents",
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "llama-3.3-70b-versatile",
 ) -> StateGraph:
     """
     Build the compiled LangGraph state machine.
     
     Args:
-        api_key: Google AI API key.
+        groq_api_key: Groq API key.
         qdrant_host: Qdrant server host.
         qdrant_port: Qdrant server port.
         collection_name: Qdrant collection name.
-        model_name: Gemini model to use.
+        model_name: Groq model to use.
         
     Returns:
         Compiled StateGraph ready for invocation.
     """
     nodes = GraphNodes(
-        api_key=api_key,
+        groq_api_key=groq_api_key,
         qdrant_host=qdrant_host,
         qdrant_port=qdrant_port,
         collection_name=collection_name,
@@ -433,9 +506,20 @@ def build_graph(
     workflow.add_node("grade_documents", nodes.grade_documents)
     workflow.add_node("generate", nodes.generate)
     workflow.add_node("rewrite_query", nodes.rewrite_query)
+    workflow.add_node("direct_response", nodes.direct_response)
     
-    # Add edges
-    workflow.add_edge(START, "retrieve")
+    # Conditional entry point: route greeting vs RAG query
+    workflow.add_conditional_edges(
+        START,
+        route_query,
+        {
+            "direct_response": "direct_response",
+            "retrieve": "retrieve",
+        },
+    )
+    
+    # Direct response ends the graph
+    workflow.add_edge("direct_response", END)
     workflow.add_edge("retrieve", "grade_documents")
     
     # Conditional edge: grade_documents -> rewrite_query OR generate
@@ -471,21 +555,17 @@ def create_rag_graph_from_settings():
     Returns:
         Compiled StateGraph.
     """
-    import sys
-    from pathlib import Path
-    
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    
-    from backend.config.settings import get_settings
+    # Assumes running from root
+    from backend.IngestScript.config.settings import get_settings
     
     settings = get_settings()
     
     return build_graph(
-        api_key=settings.google_api_key,
+        groq_api_key=settings.groq_api_key,
         qdrant_host=settings.qdrant_host,
         qdrant_port=settings.qdrant_port,
         collection_name=settings.qdrant_collection_name,
-        model_name=settings.gemini_model,
+        model_name=settings.groq_model,
     )
 
 
@@ -503,7 +583,7 @@ if __name__ == "__main__":
     )
     
     print("=" * 60)
-    print("Graph Brain - LangGraph RAG Pipeline")
+    print("Graph Brain - LangGraph RAG Pipeline (Groq)")
     print("=" * 60)
     
     try:
