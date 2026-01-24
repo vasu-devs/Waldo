@@ -122,6 +122,8 @@ class GraphNodes:
         """
         Fetch documents from Qdrant based on the query using semantic search.
         
+        Uses HYBRID RETRIEVAL: Semantic search + always include figures.
+        
         Args:
             state: Current graph state with query.
             
@@ -132,13 +134,21 @@ class GraphNodes:
         logger.info(f"[RETRIEVE] Query: '{query}'")
         
         try:
-            # Use semantic search
+            # HYBRID RETRIEVAL: Get semantic results + all figures
+            # 1. Semantic search for top-K results
             results = self.vector_store.search(query=query, limit=self.TOP_K)
             
             documents: list[Document] = []
+            seen_ids = set()
+            
             for doc in results:
+                doc_id = str(doc.get("id", ""))
+                if doc_id in seen_ids:
+                    continue
+                seen_ids.add(doc_id)
+                
                 document: Document = {
-                    "id": str(doc.get("id", "")),
+                    "id": doc_id,
                     "shadow_text": doc.get("shadow_text", ""),
                     "original_image_path": doc.get("original_image_path"),
                     "element_type": doc.get("element_type", ""),
@@ -159,6 +169,8 @@ class GraphNodes:
             "documents": documents,
             "relevant_documents": [],
         }
+
+
     
     # -------------------------------------------------------------------------
     # GRADE DOCUMENTS NODE (Hallucination Grader)
@@ -201,8 +213,57 @@ class GraphNodes:
                 "relevant_documents": relevant_documents,
             }
         
+        # INTELLIGENT VISUAL QUERY DETECTION using LLM
+        # Ask the LLM if this query would benefit from visual content
+        needs_visual = False
+        try:
+            intent_prompt = f"""Analyze this user query and determine if it would benefit from visual content (diagrams, figures, images, charts).
+
+Query: "{query}"
+
+Consider:
+- Is the user asking about something that is better explained with a visual (anatomy, structure, process, location)?
+- Does the query reference a specific figure, diagram, or visual element?
+- Would seeing an image help answer the question more accurately?
+
+Answer ONLY "visual" if visual content would significantly help, or "text" if text alone is sufficient."""
+            
+            intent_response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": intent_prompt}],
+                temperature=0.0,
+                max_tokens=10,
+            )
+            intent = intent_response.choices[0].message.content.strip().lower()
+            needs_visual = "visual" in intent
+            logger.info(f"[GRADE] Query intent analysis: '{query}' -> {'VISUAL' if needs_visual else 'TEXT'}")
+        except Exception as e:
+            logger.warning(f"[GRADE] Intent classification failed: {e}, defaulting to text-only")
+        
+        # Track if we've already accepted a figure for visual queries (limit to 1)
+        figure_accepted = False
+        
         for doc in documents:
-            prompt = f"""You are a HIGH-RECALL relevance grader. Your goal is to NEVER miss relevant documents.
+            # Create specialized prompt based on document type
+            if doc["element_type"] == "figure":
+                # For figures, use strict grading
+                prompt = f"""You are a STRICT figure relevance grader. Only accept figures that DIRECTLY answer the query.
+
+
+User Query: {query}
+
+Figure Description:
+{doc['shadow_text'][:2000]}
+
+STRICT RULES:
+1. Answer 'yes' ONLY if this specific figure directly illustrates what the user is asking about.
+2. The figure must contain the EXACT concepts, structures, or diagrams mentioned in the query.
+3. Answer 'no' if the figure is only tangentially related or from a different section.
+4. When in doubt, answer 'no' - only the most relevant figure should be shown.
+
+Is this figure DIRECTLY relevant? Answer 'yes' or 'no'."""
+            else:
+                prompt = f"""You are a HIGH-RECALL relevance grader. Your goal is to NEVER miss relevant documents.
 
 RULES:
 1. If the document contains ANY keywords from the user question, answer 'yes'.
@@ -228,6 +289,16 @@ Is this document relevant? Answer ONLY 'yes' or 'no'."""
                 grade = response.choices[0].message.content.strip().lower()
                 is_relevant = grade == "yes" or grade.startswith("yes")
                 
+                # For figures, only accept if we haven't accepted one yet
+                if doc["element_type"] == "figure" and is_relevant:
+                    if figure_accepted:
+                        logger.info(
+                            f"[GRADE] Doc {doc['id'][:8]}... "
+                            f"({doc['element_type']}, p{doc['page_number']}): SKIPPED (already have a figure)"
+                        )
+                        continue
+                    figure_accepted = True
+                
                 logger.info(
                     f"[GRADE] Doc {doc['id'][:8]}... "
                     f"({doc['element_type']}, p{doc['page_number']}): {grade}"
@@ -239,10 +310,13 @@ Is this document relevant? Answer ONLY 'yes' or 'no'."""
                     
             except Exception as e:
                 logger.error(f"[GRADE] Error grading doc {doc['id']}: {e}")
-                # On error, include the document (fail-safe)
-                relevant_documents.append(doc)
+                # On error, include the document (fail-safe) but not figures
+                if doc["element_type"] != "figure":
+                    relevant_documents.append(doc)
+
         
         logger.info(f"[GRADE] {len(relevant_documents)}/{len(documents)} relevant")
+
         
         return {
             **state,

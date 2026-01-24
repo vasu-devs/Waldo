@@ -13,24 +13,36 @@ logger = logging.getLogger(__name__)
 
 
 # Prompts for transcription and verification
-TRANSCRIPTION_PROMPT = """Transcribe this table/chart into Markdown. 
-Do not summarize, give me the data.
-Use proper Markdown table syntax with headers and alignment.
-If this is a chart or graph, extract all visible data points and labels."""
+TRANSCRIPTION_PROMPT = """Analyze this image and provide a DETAILED description for document retrieval.
 
-VERIFICATION_PROMPT = """Verify this Markdown transcription against the image.
+Your description should include:
+1. **Type**: What kind of visual is this? (diagram, chart, table, photograph, illustration, anatomical figure, etc.)
+2. **Main Subject**: What is the primary topic or content shown?
+3. **Key Elements**: List ALL labeled components, structures, or data points visible
+4. **Relationships**: Describe how elements relate to each other (connections, layers, hierarchies)
+5. **Text/Labels**: Transcribe ALL visible text, labels, captions, and annotations
+6. **Context**: What concept or information does this visual explain?
 
-TRANSCRIPTION TO VERIFY:
+For tables: Use proper Markdown table syntax with headers.
+For diagrams: Describe the structure and all labeled parts in detail.
+For anatomy figures: Name ALL anatomical structures shown and their locations.
+
+Be EXHAUSTIVE - your description will be used for semantic search to find this image when users ask questions about its content."""
+
+VERIFICATION_PROMPT = """Verify this description against the image and ensure it's comprehensive for retrieval.
+
+DESCRIPTION TO VERIFY:
 {transcription}
 
 Instructions:
-1. Compare the transcription with the actual image content.
-2. Check for any missing rows, columns, or data points.
-3. Check for any transcription errors in numbers, text, or formatting.
-4. If there are errors, provide the CORRECTED version.
-5. If the transcription is accurate, return it unchanged.
+1. Check if ALL visible elements, labels, and structures are mentioned.
+2. Ensure technical terms and proper names are correctly spelled.
+3. Add any missing details that would help users find this image when searching.
+4. If there are errors or omissions, provide the CORRECTED version.
+5. If the description is complete, return it unchanged.
 
-Return ONLY the final Markdown transcription (corrected if needed), no explanations."""
+Return ONLY the final description (corrected if needed), no explanations."""
+
 
 
 @dataclass

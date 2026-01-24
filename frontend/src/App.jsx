@@ -165,38 +165,24 @@ const Message = ({ isBot, text, documents, ingestionFile }) => (
                 </div>
             )}
 
-            {/* Render Retrieved Documents/Images */}
-            {documents && documents.length > 0 && (
-                <div className="mt-4 space-y-3">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Sources & Evidence</p>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {documents.map((doc, idx) => (
-                            <div key={idx} className="bg-white/50 border border-gray-200 rounded-lg p-2 flex flex-col gap-2">
-                                {doc.original_image_path && (
-                                    <div className="relative aspect-video rounded-md overflow-hidden bg-gray-100">
-                                        <img
-                                            src={`http://localhost:8000/images/${doc.original_image_path.split(/[/\\]/).pop()}`}
-                                            alt={`Page ${doc.page_number} - ${doc.element_type}`}
-                                            className="w-full h-full object-contain"
-                                            onError={(e) => {
-                                                e.target.style.display = 'none';
-                                                e.target.nextSibling.style.display = 'flex';
-                                            }}
-                                        />
-                                        <div className="absolute inset-0 flex items-center justify-center text-gray-400" style={{ display: 'none' }}>
-                                            <ImageIcon size={20} />
-                                        </div>
-                                    </div>
-                                )}
-                                <div className="text-[10px] text-gray-500 flex items-center gap-1">
-                                    <FileText size={10} />
-                                    <span className="truncate">Page {doc.page_number} • {doc.element_type}</span>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
+            {/* Render only images inline - no citations */}
+            {documents && documents.filter(doc => doc.original_image_path && doc.element_type === 'figure').length > 0 && (
+                <div className="mt-4">
+                    {documents.filter(doc => doc.original_image_path && doc.element_type === 'figure').slice(0, 1).map((doc, idx) => (
+                        <div key={idx} className="rounded-lg overflow-hidden border border-gray-200 bg-white shadow-sm">
+                            <img
+                                src={`http://localhost:8000/images/${doc.original_image_path.split(/[/\\]/).pop()}`}
+                                alt={`Figure from Page ${doc.page_number}`}
+                                className="w-full h-auto object-contain"
+                                onError={(e) => {
+                                    e.target.parentElement.style.display = 'none';
+                                }}
+                            />
+                        </div>
+                    ))}
                 </div>
             )}
+
         </div>
 
         {!isBot && (

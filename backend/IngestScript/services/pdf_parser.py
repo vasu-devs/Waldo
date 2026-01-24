@@ -302,9 +302,14 @@ class PDFParser:
 
         # Step 4: Extract individual pictures using doc.pictures (PREFERRED)
         # This extracts only the figure regions, not full pages
+        # Also extracts figure labels and captions for rich metadata
         try:
             if hasattr(doc, 'pictures') and doc.pictures:
                 logger.info(f"Found {len(doc.pictures)} pictures via doc.pictures")
+                
+                # Track figure numbering
+                figure_number = 1
+                
                 for i, picture in enumerate(doc.pictures):
                     # Get page number from provenance
                     page_no = 1
@@ -316,7 +321,8 @@ class PDFParser:
                     
                     # Get the image
                     if hasattr(picture, 'image') and picture.image is not None:
-                        image_filename = f"figure_{page_no}_{i}.png"
+                        # Use figure number in filename for proper identification
+                        image_filename = f"figure_{figure_number}_page_{page_no}.png"
                         image_path = self.output_dir / image_filename
                         
                         try:
@@ -327,19 +333,57 @@ class PDFParser:
                             
                             if pil_img:
                                 pil_img.save(image_path)
-                                logger.info(f"Saved FIGURE image: {image_path} (from page {page_no})")
+                                logger.info(f"Saved Figure {figure_number}: {image_path} (from page {page_no})")
                                 
-                                # Get caption if available
-                                caption = None
+                                # Build RICH caption with all available context
+                                caption_parts = []
+                                
+                                # 1. Add figure label (Figure X)
+                                caption_parts.append(f"Figure {figure_number}")
+                                
+                                # 2. Try to get caption from Docling
                                 if hasattr(picture, 'caption_text'):
-                                    caption = picture.caption_text(doc)
+                                    try:
+                                        docling_caption = picture.caption_text(doc)
+                                        if docling_caption and docling_caption.strip():
+                                            caption_parts.append(docling_caption.strip())
+                                    except Exception:
+                                        pass
+                                
+                                # 3. Try to get text from annotations
+                                if hasattr(picture, 'annotations'):
+                                    for ann in picture.annotations or []:
+                                        if hasattr(ann, 'text') and ann.text:
+                                            caption_parts.append(ann.text)
+                                
+                                # 4. Try to get any label property
+                                if hasattr(picture, 'label') and picture.label:
+                                    label_text = str(picture.label)
+                                    if label_text not in ' '.join(caption_parts):
+                                        caption_parts.append(label_text)
+                                
+                                # 5. Look for figure references in markdown near this page
+                                # Search for "Figure X:" patterns in the markdown
+                                import re
+                                figure_pattern = rf"Figure\s*{figure_number}\s*[:\.]?\s*([^.]*(?:\.[^.]*)?)"
+                                matches = re.findall(figure_pattern, markdown_text, re.IGNORECASE)
+                                for match in matches:
+                                    if match.strip() and match.strip() not in ' '.join(caption_parts):
+                                        caption_parts.append(match.strip())
+                                
+                                # Combine all caption parts
+                                full_caption = " | ".join(filter(None, caption_parts))
+                                logger.info(f"Figure {figure_number} caption: {full_caption[:100]}...")
                                 
                                 elements.append(ExtractedElement(
                                     element_type=ElementType.FIGURE,
-                                    content=caption,
+                                    content=full_caption,
                                     image_path=image_path,
                                     page_number=page_no,
+                                    heading=f"Figure {figure_number}",  # Store figure number in heading
                                 ))
+                                
+                                figure_number += 1
                         except Exception as e:
                             logger.warning(f"Failed to save picture {i}: {e}")
             else:
@@ -347,6 +391,6 @@ class PDFParser:
         except Exception as e:
             logger.warning(f"Error extracting pictures: {e}")
 
-
         logger.info(f"Extracted {len(elements)} total elements from PDF")
         return elements
+

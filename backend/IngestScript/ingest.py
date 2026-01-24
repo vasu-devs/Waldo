@@ -134,10 +134,12 @@ async def process_pdf(
             continue
 
         # RATE LIMITING: Add delay between Gemini API calls to respect free tier limits
-        # Free tier allows ~15 requests per minute, so we wait 5 seconds between calls
+        # Gemini free tier has strict per-minute limits - error says "retry in 26s"
+        # Using 35 seconds to ensure quota resets before each call
+        GEMINI_DELAY_SECONDS = 35
         if stats["figures"] > 0:  # Only delay after the first figure
-            logger.info("⏳ Waiting 5 seconds before next Gemini API call (rate limit protection)...")
-            await asyncio.sleep(5)
+            logger.info(f"⏳ Waiting {GEMINI_DELAY_SECONDS}s for Gemini quota to reset...")
+            await asyncio.sleep(GEMINI_DELAY_SECONDS)
 
         # Transcribe with verification
         logger.info(f"Transcribing {element.element_type.value} on page {element.page_number}...")
@@ -151,9 +153,28 @@ async def process_pdf(
                 logger.info("✓ Self-correction applied")
         except Exception as e:
             logger.error(f"Transcription failed for {element.image_path}: {e}")
-            # FALLBACK: Use a placeholder description so the figure is still stored
-            transcription_text = f"[{element.element_type.value.upper()} - Page {element.page_number}] Visual element extracted from PDF. Image available at: {element.image_path.name}"
-            logger.info(f"Using fallback description for {element.element_type.value}")
+            # FALLBACK: Build RICH metadata from available context
+            # Include figure number (from heading), caption, and context for semantic matching
+            fallback_parts = []
+            
+            # 1. Add figure identifier (e.g., "Figure 1")
+            if element.heading:
+                fallback_parts.append(f"[{element.heading}]")
+            else:
+                fallback_parts.append(f"[{element.element_type.value.upper()} - Page {element.page_number}]")
+            
+            # 2. Add caption/content which now includes rich metadata from parser
+            if element.content and element.content.strip():
+                fallback_parts.append(element.content.strip())
+            
+            # 3. Add searchable metadata
+            fallback_parts.append(f"Visual element from Page {element.page_number}.")
+            fallback_parts.append(f"Image file: {element.image_path.name}")
+            
+            transcription_text = " ".join(filter(None, fallback_parts))
+            logger.info(f"Using fallback description for {element.element_type.value}: {transcription_text[:100]}...")
+
+
 
         # Collect transcription for summary
         all_text_content.append(transcription_text)
