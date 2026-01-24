@@ -6,6 +6,7 @@ from typing import Annotated
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Configure Logging
@@ -16,6 +17,13 @@ logging.basicConfig(
 logger = logging.getLogger("api")
 
 app = FastAPI(title="SOS 42 API", version="1.0.0")
+
+# Mount static files for serving extracted images
+output_dir = Path(__file__).parent.parent / "output"
+output_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/images", StaticFiles(directory=str(output_dir)), name="images")
+logger.info(f"Mounted static images from: {output_dir}")
+
 
 # CORS Middleware
 origins = [

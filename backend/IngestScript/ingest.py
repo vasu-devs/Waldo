@@ -133,30 +133,39 @@ async def process_pdf(
             logger.warning(f"Skipping element without image: {element}")
             continue
 
+        # RATE LIMITING: Add delay between Gemini API calls to respect free tier limits
+        # Free tier allows ~15 requests per minute, so we wait 5 seconds between calls
+        if stats["figures"] > 0:  # Only delay after the first figure
+            logger.info("⏳ Waiting 5 seconds before next Gemini API call (rate limit protection)...")
+            await asyncio.sleep(5)
+
         # Transcribe with verification
         logger.info(f"Transcribing {element.element_type.value} on page {element.page_number}...")
         
+        transcription_text = None
         try:
             result = await transcriber.transcribe_with_verification(element.image_path)
+            transcription_text = result.verified_transcription
+            if result.was_corrected:
+                stats["corrections"] += 1
+                logger.info("✓ Self-correction applied")
         except Exception as e:
             logger.error(f"Transcription failed for {element.image_path}: {e}")
-            continue
-
-        if result.was_corrected:
-            stats["corrections"] += 1
-            logger.info("✓ Self-correction applied")
+            # FALLBACK: Use a placeholder description so the figure is still stored
+            transcription_text = f"[{element.element_type.value.upper()} - Page {element.page_number}] Visual element extracted from PDF. Image available at: {element.image_path.name}"
+            logger.info(f"Using fallback description for {element.element_type.value}")
 
         # Collect transcription for summary
-        all_text_content.append(result.verified_transcription)
+        all_text_content.append(transcription_text)
 
         # Log the shadow text
         logger.info(f"--- Shadow Text ({element.element_type.value}) ---")
-        logger.info(f"\n{result.verified_transcription}\n")
+        logger.info(f"\n{transcription_text}\n")
         logger.info("--- End Shadow Text ---")
 
-        # Store in Qdrant
+        # Store in Qdrant - ALWAYS store figures, even with fallback text
         metadata = DocumentMetadata(
-            shadow_text=result.verified_transcription,
+            shadow_text=transcription_text,
             original_image_path=str(element.image_path.absolute()),
             element_type=element.element_type.value,
             source_pdf=str(pdf_path.absolute()),
@@ -166,9 +175,10 @@ async def process_pdf(
         try:
             doc_id = vector_store.upsert_document(metadata)
             stats["stored"] += 1
-            logger.info(f"Stored in Qdrant with ID: {doc_id}")
+            logger.info(f"Stored {element.element_type.value} in Qdrant with ID: {doc_id}")
         except Exception as e:
             logger.error(f"Failed to store in Qdrant: {e}")
+
 
     # Generate and store global summary (Step 2)
     if all_text_content:

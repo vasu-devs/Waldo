@@ -174,7 +174,16 @@ const Message = ({ isBot, text, documents, ingestionFile }) => (
                             <div key={idx} className="bg-white/50 border border-gray-200 rounded-lg p-2 flex flex-col gap-2">
                                 {doc.original_image_path && (
                                     <div className="relative aspect-video rounded-md overflow-hidden bg-gray-100">
-                                        <div className="absolute inset-0 flex items-center justify-center text-gray-400">
+                                        <img
+                                            src={`http://localhost:8000/images/${doc.original_image_path.split(/[/\\]/).pop()}`}
+                                            alt={`Page ${doc.page_number} - ${doc.element_type}`}
+                                            className="w-full h-full object-contain"
+                                            onError={(e) => {
+                                                e.target.style.display = 'none';
+                                                e.target.nextSibling.style.display = 'flex';
+                                            }}
+                                        />
+                                        <div className="absolute inset-0 flex items-center justify-center text-gray-400" style={{ display: 'none' }}>
                                             <ImageIcon size={20} />
                                         </div>
                                     </div>
