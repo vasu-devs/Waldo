@@ -48,24 +48,14 @@ def get_settings():
     return _settings
 
 def get_rag_graph():
-    """Lazy-load the RAG graph on first use, using SHARED VectorStore."""
+    """Lazy-load the RAG graph on first use."""
     global _rag_graph
     if _rag_graph is None:
         logger.info("Initializing RAG graph (first request)...")
-        from backend.GraphBrain.graph import build_graph_with_vector_store
-        settings = get_settings()
-        
-        # CRITICAL: Use the SAME VectorStore instance as ingestion
-        shared_vector_store = get_vector_store()
-        
-        _rag_graph = build_graph_with_vector_store(
-            groq_api_key=settings.groq_api_key,
-            vector_store=shared_vector_store,
-            model_name=settings.groq_model,
-        )
-        logger.info("RAG graph initialized successfully with SHARED VectorStore")
+        from backend.GraphBrain.graph import create_rag_graph_from_settings
+        _rag_graph = create_rag_graph_from_settings()
+        logger.info("RAG graph initialized successfully")
     return _rag_graph
-
 
 def get_transcriber():
     """Lazy-load the Gemini transcriber on first use."""
@@ -91,14 +81,14 @@ def get_vector_store():
         
         # FORCE in-memory storage to avoid [WinError 10061] connection refused
         # This ensures the backend works self-contained without external Qdrant
-        logger.info("Initializing VectorStore...")
+        logger.info("Forcing in-memory Qdrant storage for reliability")
         
         _vector_store = VectorStore(
-            host=None, # Let VectorStore logic handle path="./qdrant_data"
+            host=":memory:",
             port=settings.qdrant_port,
             collection_name=settings.qdrant_collection_name,
         )
-        logger.info("VectorStore initialized")
+        logger.info("VectorStore initialized (in-memory)")
     return _vector_store
 
 # --- Models ---

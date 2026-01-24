@@ -66,16 +66,15 @@ class VectorStore:
         self.embedder = SentenceTransformer(self.EMBEDDING_MODEL)
         
         try:
-            if host == ":memory:":
-                self.client = QdrantClient(":memory:")
-                logger.info("Connected to in-memory Qdrant")
-            else:
-                self.client = QdrantClient(host=host, port=port)
-                logger.info(f"Connected to Qdrant at {host}:{port}")
-        except Exception as e:
-            logger.warning(f"Could not connect to Qdrant server: {e}")
-            logger.info("Using in-memory Qdrant client for local development")
+            # ALWAYS use in-memory for reliability in single-process mode
+            # This avoids disk locking issues between ingestion and RAG
+            logger.info("Using in-memory Qdrant storage")
             self.client = QdrantClient(":memory:")
+            logger.info("Connected to in-memory Qdrant")
+        except Exception as e:
+            logger.error(f"Failed to initialize Qdrant: {e}")
+            raise
+
 
         self._ensure_collection()
 

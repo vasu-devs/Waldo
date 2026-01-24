@@ -9,9 +9,6 @@ import logging
 from pathlib import Path
 from dataclasses import dataclass
 
-from google import genai
-from google.genai import types
-
 logger = logging.getLogger(__name__)
 
 
@@ -56,8 +53,12 @@ class GeminiTranscriber:
             api_key: Google AI API key.
             model_name: Gemini model to use.
         """
+        # Lazy-load google.genai to prevent blocking server startup
+        from google import genai
+        
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
+        self.genai_types = None  # Will be loaded on first use
         logger.info(f"Initialized Gemini transcriber with model: {model_name}")
 
     def _load_image_as_base64(self, image_path: Path) -> str:
@@ -88,6 +89,9 @@ class GeminiTranscriber:
             Markdown transcription of the image content.
         """
         logger.info(f"Transcribing image: {image_path}")
+
+        # Lazy-load types
+        from google.genai import types
 
         image_data = self._load_image_as_base64(image_path)
         mime_type = self._get_mime_type(image_path)
@@ -124,6 +128,9 @@ class GeminiTranscriber:
             Verified (and possibly corrected) transcription.
         """
         logger.info(f"Verifying transcription for: {image_path}")
+
+        # Lazy-load types
+        from google.genai import types
 
         image_data = self._load_image_as_base64(image_path)
         mime_type = self._get_mime_type(image_path)

@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from backend.IngestScript.config.settings import get_settings
-from backend.IngestScript.services.pdf_parser import PDFParser, ElementType
 from backend.IngestScript.services.gemini_transcriber import GeminiTranscriber
 from backend.IngestScript.services.vector_store import VectorStore, DocumentMetadata
 
@@ -49,6 +48,9 @@ async def process_pdf(
     Returns:
         Processing statistics.
     """
+    # Lazy-load PDFParser to prevent docling from blocking server startup
+    from backend.IngestScript.services.pdf_parser import PDFParser, ElementType
+    
     stats = {
         "total_elements": 0,
         "text_chunks": 0,

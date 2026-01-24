@@ -8,6 +8,12 @@ from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from backend.IngestScript.config.settings import get_settings
+from backend.IngestScript.services.gemini_transcriber import GeminiTranscriber
+from backend.IngestScript.services.vector_store import VectorStore
+from backend.IngestScript.ingest import process_pdf
+from backend.GraphBrain.graph import create_rag_graph_from_settings
+
 # Configure Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -19,8 +25,8 @@ app = FastAPI(title="SOS 42 API", version="1.0.0")
 
 # CORS Middleware
 origins = [
-    "http://localhost:5173",
-    "http://localhost:5174",
+    "http://localhost:5173",  # Vite dev server
+    "http://localhost:5174",  # Vite fallback port
     "http://127.0.0.1:5173",
     "http://localhost:3000",
 ]
@@ -33,47 +39,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Lazy-loaded services (initialized on first use) ---
-_settings = None
-_rag_graph = None
-_transcriber = None
-_vector_store = None
+# --- Global Services ---
+settings = get_settings()
 
-def get_settings():
-    """Lazy-load settings."""
-    global _settings
-    if _settings is None:
-        from backend.IngestScript.config.settings import get_settings as _get_settings
-        _settings = _get_settings()
-    return _settings
+# Lazy-load RAG graph to prevent blocking startup with model loading
+_rag_graph = None
 
 def get_rag_graph():
-    """Lazy-load the RAG graph on first use, using SHARED VectorStore."""
+    """Lazy-load the RAG graph on first use."""
     global _rag_graph
     if _rag_graph is None:
         logger.info("Initializing RAG graph (first request)...")
-        from backend.GraphBrain.graph import build_graph_with_vector_store
-        settings = get_settings()
-        
-        # CRITICAL: Use the SAME VectorStore instance as ingestion
-        shared_vector_store = get_vector_store()
-        
-        _rag_graph = build_graph_with_vector_store(
-            groq_api_key=settings.groq_api_key,
-            vector_store=shared_vector_store,
-            model_name=settings.groq_model,
-        )
-        logger.info("RAG graph initialized successfully with SHARED VectorStore")
+        _rag_graph = create_rag_graph_from_settings()
+        logger.info("RAG graph initialized successfully")
     return _rag_graph
 
+# Lazy-load Ingest Services to prevent blocking startup
+_transcriber = None
+_vector_store = None
 
 def get_transcriber():
     """Lazy-load the Gemini transcriber on first use."""
     global _transcriber
     if _transcriber is None:
         logger.info("Initializing Gemini transcriber...")
-        from backend.IngestScript.services.gemini_transcriber import GeminiTranscriber
-        settings = get_settings()
         _transcriber = GeminiTranscriber(
             api_key=settings.google_api_key,
             model_name=settings.gemini_model,
@@ -86,15 +75,8 @@ def get_vector_store():
     global _vector_store
     if _vector_store is None:
         logger.info("Initializing VectorStore (loading embedding model)...")
-        from backend.IngestScript.services.vector_store import VectorStore
-        settings = get_settings()
-        
-        # FORCE in-memory storage to avoid [WinError 10061] connection refused
-        # This ensures the backend works self-contained without external Qdrant
-        logger.info("Initializing VectorStore...")
-        
         _vector_store = VectorStore(
-            host=None, # Let VectorStore logic handle path="./qdrant_data"
+            host=settings.qdrant_host,
             port=settings.qdrant_port,
             collection_name=settings.qdrant_collection_name,
         )
@@ -122,16 +104,14 @@ async def handle_ingestion(file_path: Path, filename: str):
         logger.info(f"Starting background ingestion for {filename}")
         ingestion_status[filename] = {"status": "processing", "message": "Starting ingestion..."}
         
-        # Lazy import
-        from backend.IngestScript.ingest import process_pdf
-        
-        settings = get_settings()
+        # Ensure output dir exists
         output_dir = settings.output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
         
         ingestion_status[filename]["message"] = "Parsing PDF..."
         
         def update_progress(data: dict):
+            # Update status safely
             if filename in ingestion_status:
                 ingestion_status[filename].update(data)
         
@@ -150,10 +130,12 @@ async def handle_ingestion(file_path: Path, filename: str):
         }
         
     except Exception as e:
+        # Print to console for guaranteed visibility + log for structured output
         print(f"\n{'='*60}\nINGESTION ERROR for {filename}: {e}\n{'='*60}\n")
         logger.error(f"Ingestion failed for {filename}: {e}", exc_info=True)
         ingestion_status[filename] = {"status": "error", "message": str(e)}
     finally:
+        # Cleanup temp file
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Cleaned up temp file {file_path}")
@@ -163,7 +145,7 @@ async def handle_ingestion(file_path: Path, filename: str):
 @app.get("/")
 async def root():
     """Root endpoint for quick reachability test."""
-    return {"status": "ok", "message": "SOS 42 API is running"}
+    return {"status": "ok"}
 
 
 @app.get("/health")
@@ -173,20 +155,28 @@ async def health_check():
 
 @app.delete("/reset")
 async def reset_system():
-    """Reset the entire knowledge base for a fresh demo."""
+    """
+    Reset the entire knowledge base for a fresh demo.
+    
+    Deletes and recreates the Qdrant collection.
+    """
     try:
         logger.info("Resetting knowledge base...")
-        settings = get_settings()
+        
+        # Get vector store (lazy-loaded)
         vs = get_vector_store()
         
+        # Delete the collection
         vs.client.delete_collection(
             collection_name=settings.qdrant_collection_name
         )
         logger.info(f"Deleted collection: {settings.qdrant_collection_name}")
         
+        # Recreate empty collection
         vs._ensure_collection()
         logger.info(f"Recreated collection: {settings.qdrant_collection_name}")
         
+        # Clear ingestion status tracking
         ingestion_status.clear()
         
         return {"status": "success", "message": "Knowledge base cleared. Ready for new document."}
@@ -209,6 +199,7 @@ async def ingest_document(
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
     
     try:
+        # Save upload to a temp file
         suffix = Path(file.filename).suffix
         with NamedTemporaryFile(delete=False, suffix=suffix, prefix="upload_") as tmp:
             shutil.copyfileobj(file.file, tmp)
@@ -216,8 +207,10 @@ async def ingest_document(
             
         logger.info(f"File uploaded: {file.filename} -> {tmp_path}")
         
+        # Initialize status
         ingestion_status[file.filename] = {"status": "queued", "message": "Queued for processing..."}
         
+        # Run ingestion in background to not block the response
         background_tasks.add_task(handle_ingestion, tmp_path, file.filename)
         
         return {
@@ -235,8 +228,10 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f"Chat Request: {request.query}")
         
+        # Get RAG graph (lazy-loaded on first call)
         rag_graph = get_rag_graph()
         
+        # Invoke LangGraph Pipeline
         initial_state = {
             "query": request.query,
             "documents": [],

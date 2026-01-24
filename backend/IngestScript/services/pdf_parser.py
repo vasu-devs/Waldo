@@ -50,7 +50,7 @@ class PDFParser:
 
         # Configure docling pipeline
         pipeline_options = PdfPipelineOptions()
-        pipeline_options.generate_page_images = False
+        pipeline_options.generate_page_images = True  # Enable page images as fallback
         pipeline_options.generate_picture_images = True
         pipeline_options.generate_table_images = True
 
@@ -61,6 +61,7 @@ class PDFParser:
                 )
             }
         )
+        logger.info(f"PDFParser initialized with output_dir: {self.output_dir}")
         
         # Chunking configuration
         self.chunk_size = 1000
@@ -259,9 +260,14 @@ class PDFParser:
             items_list = list(doc.iterate_items())
             logger.info(f"Found {len(items_list)} items via iterate_items()")
             
-            for item in items_list:
+            for i, item in enumerate(items_list):
+                # Debug logging for item
+                has_image = hasattr(item, 'image') and item.image is not None
+                if has_image:
+                    logger.info(f"Item {i} has image! Label: {getattr(item, 'label', 'N/A')}")
+                
                 # Check if this item has an image (table or figure)
-                if hasattr(item, 'image') and item.image is not None:
+                if has_image:
                     page_no = getattr(item, 'page_no', 1) or 1
                     
                     # Determine type
@@ -269,6 +275,10 @@ class PDFParser:
                     label = str(getattr(item, 'label', '')).lower()
                     if 'figure' in label or 'picture' in label or 'image' in label:
                         element_type = ElementType.FIGURE
+                    # Fallback: if it has an image but no clear label, call it a FIGURE
+                    elif 'table' not in label:
+                        element_type = ElementType.FIGURE
+                    
                     
                     # Save image
                     image_filename = f"{element_type.value}_{page_no}_{len(elements)}.png"
@@ -289,6 +299,45 @@ class PDFParser:
                         
         except Exception as e:
             logger.warning(f"Error iterating items for images: {e}")
+
+        # Step 4: Fallback - Extract Page Images if enabled
+        if not any(e.element_type in [ElementType.TABLE, ElementType.FIGURE] for e in elements):
+            logger.info("No figures/tables found via iterate_items. checking doc.pages...")
+            try:
+                for i, page in enumerate(doc.pages.values()): # doc.pages is a dict {page_no: Page}
+                    if hasattr(page, 'image') and page.image is not None:
+                        logger.info(f"Processing image for page {page.page_no}")
+                        # Save page image
+                        image_filename = f"page_{page.page_no}_{len(elements)}.png"
+                        image_path = self.output_dir / image_filename
+                        
+                        try:
+                            # docling ImageRef handling
+                            img = None
+                            if hasattr(page.image, 'pil_image'):
+                                img = page.image.pil_image
+                            elif hasattr(page.image, 'image'): # old version?
+                                img = page.image.image
+                            else:
+                                img = page.image # Fallback if it is already PIL image
+                                
+                            if img is None:
+                                logger.warning(f"Page {page.page_no} image is None")
+                                continue
+                                
+                            img.save(image_path)
+                            logger.info(f"Saved PAGE image: {image_path}")
+                            
+                            elements.append(ExtractedElement(
+                                element_type=ElementType.FIGURE, # Treat page as figure
+                                content=f"Page {page.page_no} Screenshot",
+                                image_path=image_path,
+                                page_number=page.page_no,
+                            ))
+                        except Exception as e:
+                            logger.warning(f"Failed to save page image {page.page_no}: {e}")
+            except Exception as e:
+                logger.warning(f"Error extracting page images: {e}")
 
         logger.info(f"Extracted {len(elements)} total elements from PDF")
         return elements

@@ -569,11 +569,64 @@ def create_rag_graph_from_settings():
     
     return build_graph(
         groq_api_key=settings.groq_api_key,
-        qdrant_host=settings.qdrant_host,
-        qdrant_port=settings.qdrant_port,
+        qdrant_host=None, # Signal to use path
+        qdrant_port=None,
         collection_name=settings.qdrant_collection_name,
         model_name=settings.groq_model,
     )
+
+
+def build_graph_with_vector_store(
+    groq_api_key: str,
+    vector_store,
+    model_name: str = "llama-3.3-70b-versatile",
+):
+    """
+    Build the RAG graph using an EXISTING VectorStore instance.
+    This ensures ingestion and RAG share the same in-memory database.
+    
+    Args:
+        groq_api_key: Groq API key.
+        vector_store: Pre-initialized VectorStore instance (shared).
+        model_name: Groq model to use.
+        
+    Returns:
+        Compiled StateGraph.
+    """
+    # Create nodes - we'll manually set the vector_store after creation
+    nodes = object.__new__(GraphNodes)
+    nodes.client = Groq(api_key=groq_api_key)
+    nodes.model_name = model_name
+    nodes.vector_store = vector_store  # USE SHARED INSTANCE - critical!
+    logger.info(f"Using SHARED VectorStore instance")
+    
+    # Build graph
+    graph = StateGraph(GraphState)
+    
+    # Add nodes
+    graph.add_node("retrieve", nodes.retrieve)
+    graph.add_node("grade_documents", nodes.grade_documents)
+    graph.add_node("generate", nodes.generate)
+    graph.add_node("rewrite_query", nodes.rewrite_query)
+    graph.add_node("direct_response", nodes.direct_response)
+    
+    # Add edges - use standalone route functions
+    graph.add_conditional_edges(
+        START,
+        route_query,  # standalone function
+    )
+    graph.add_edge("retrieve", "grade_documents")
+    graph.add_conditional_edges(
+        "grade_documents",
+        should_rewrite_or_generate,  # standalone function
+    )
+    graph.add_edge("rewrite_query", "retrieve")
+    graph.add_edge("generate", END)
+    graph.add_edge("direct_response", END)
+    
+    graph = graph.compile()
+    logger.info("Graph compiled successfully with SHARED VectorStore")
+    return graph
 
 
 # =============================================================================
