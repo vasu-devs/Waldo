@@ -342,6 +342,19 @@ Is this document relevant? Answer ONLY 'yes' or 'no'."""
         
         logger.info(f"[GENERATE] Using {len(docs)} relevant documents")
         
+        # OUT-OF-SCOPE CHECK: If no relevant documents, refuse to answer
+        if not docs or len(docs) == 0:
+            logger.info("[GENERATE] No relevant documents - refusing to answer (out of scope)")
+            refusal = (
+                "I don't have information about that in the uploaded document.\n\n"
+                "I can only answer questions related to the content of the PDF you've uploaded. "
+                "Please ask a question about the document, or upload a different PDF if you'd like to explore other topics."
+            )
+            return {
+                **state,
+                "generation": refusal,
+            }
+        
         context_parts = []
         
         for i, doc in enumerate(docs, 1):
@@ -352,27 +365,30 @@ Is this document relevant? Answer ONLY 'yes' or 'no'."""
         
         context = "\n".join(context_parts)
         
-        prompt = f"""You are a structured, data-driven AI assistant.
+        prompt = f"""You are a structured, data-driven AI assistant that ONLY answers from the provided document context.
 
-ROLE: Synthesize document fragments into a clear, scannable answer.
+CRITICAL RULE - NO HALLUCINATION:
+* You can ONLY answer based on the document fragments provided below.
+* If the question asks about something NOT in the documents, respond: "I don't have information about that in the uploaded document."
+* NEVER make up information. NEVER use external knowledge. ONLY use what's in the context.
+* If you're not 100% sure the answer is in the context, refuse to answer.
 
-STRICT FORMATTING RULES:
+FORMATTING RULES:
 1. Use Markdown `###` for section headers when organizing information.
-2. Use bullet points `*` for almost everything - lists, facts, details.
+2. Use bullet points `*` for lists, facts, details.
 3. **Bold** key terms, names, numbers, and important concepts.
-4. Never write a paragraph longer than 3 lines. Break up dense text.
-5. Do NOT say "Document 1 says..." or "According to the text". Just state facts directly.
+4. Never write a paragraph longer than 3 lines.
+5. Do NOT say "Document 1 says...". Just state facts directly.
 
 AGENTIC BEHAVIOR:
-* At the end of your answer, ask ONE relevant follow-up question based on what you just said.
-* Example: "Would you like me to elaborate on the **BranchGPT** architecture?"
-
-TONE: Professional, concise, engineering-focused.
+* At the end, ask ONE relevant follow-up question based on what you said.
 
 Document Fragments:
 {context}
 
 User Question: {query}
+
+REMEMBER: If the answer is NOT in the documents above, say "I don't have information about that in the uploaded document."
 
 Answer:"""
 
@@ -380,7 +396,7 @@ Answer:"""
             response = self.client.chat.completions.create(
                 model=self.model_name,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
+                temperature=0.3,  # Lower temperature for more factual responses
                 max_tokens=2048,
             )
             
@@ -395,6 +411,7 @@ Answer:"""
             **state,
             "generation": generation,
         }
+
     
     # -------------------------------------------------------------------------
     # REWRITE QUERY NODE
