@@ -15,7 +15,7 @@
 </tr>
 <tr>
 <td><strong>Repository</strong></td>
-<td><a href="https://github.com/Vasu-DevS/SOS42">github.com/Vasu-DevS/SOS42</a></td>
+<td><a href="https://github.com/Vasu-DevS/Waldo">github.com/Vasu-DevS/Waldo</a></td>
 </tr>
 </table>
 
