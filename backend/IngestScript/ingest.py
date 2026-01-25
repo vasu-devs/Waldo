@@ -134,12 +134,13 @@ async def process_pdf(
             continue
 
         # RATE LIMITING: Add delay between Gemini API calls to respect free tier limits
-        # Gemini free tier has strict per-minute limits - error says "retry in 26s"
-        # Using 35 seconds to ensure quota resets before each call
-        GEMINI_DELAY_SECONDS = 35
-        if stats["figures"] > 0:  # Only delay after the first figure
+        # Gemini free tier: 15 requests/min, 1M tokens/min, 1500 requests/day
+        # Using 65 seconds to ensure quota fully resets before each call
+        GEMINI_DELAY_SECONDS = 65
+        if stats["figures"] > 0 or stats["tables"] > 0:  # Delay after first visual element
             logger.info(f"⏳ Waiting {GEMINI_DELAY_SECONDS}s for Gemini quota to reset...")
             await asyncio.sleep(GEMINI_DELAY_SECONDS)
+
 
         # Transcribe with verification
         logger.info(f"Transcribing {element.element_type.value} on page {element.page_number}...")

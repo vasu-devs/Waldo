@@ -16,6 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger("api")
 
+# Suppress annoying asyncio ConnectionResetError warnings
+logging.getLogger("asyncio").setLevel(logging.CRITICAL)
+
+
 app = FastAPI(title="SOS 42 API", version="1.0.0")
 
 # Mount static files for serving extracted images
