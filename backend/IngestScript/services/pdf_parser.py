@@ -391,6 +391,86 @@ class PDFParser:
         except Exception as e:
             logger.warning(f"Error extracting pictures: {e}")
 
+        # Step 5: Extract tables using doc.tables (for BOTH text and images)
+        # Tables are stored as:
+        # 1. Text content (markdown) for semantic search
+        # 2. Image for visual display to user
+        try:
+            if hasattr(doc, 'tables') and doc.tables:
+                logger.info(f"Found {len(doc.tables)} tables via doc.tables")
+                
+                table_number = 1
+                
+                for i, table in enumerate(doc.tables):
+                    # Get page number from provenance
+                    page_no = 1
+                    if hasattr(table, 'prov') and table.prov:
+                        for prov_item in table.prov:
+                            if hasattr(prov_item, 'page_no'):
+                                page_no = prov_item.page_no
+                                break
+                    
+                    # Try to get table image
+                    image_path = None
+                    if hasattr(table, 'image') and table.image is not None:
+                        image_filename = f"table_{table_number}_page_{page_no}.png"
+                        img_path = self.output_dir / image_filename
+                        
+                        try:
+                            pil_img = None
+                            if hasattr(table.image, 'pil_image'):
+                                pil_img = table.image.pil_image
+                            
+                            if pil_img:
+                                pil_img.save(img_path)
+                                image_path = img_path
+                                logger.info(f"Saved Table {table_number} image: {img_path} (from page {page_no})")
+                        except Exception as e:
+                            logger.warning(f"Failed to save table image: {e}")
+                    
+                    # Get table content as markdown
+                    table_content = ""
+                    
+                    # Try export_to_markdown method
+                    if hasattr(table, 'export_to_markdown'):
+                        try:
+                            table_content = table.export_to_markdown()
+                        except Exception:
+                            pass
+                    
+                    # Try to get caption
+                    caption = ""
+                    if hasattr(table, 'caption_text'):
+                        try:
+                            caption = table.caption_text(doc) or ""
+                        except Exception:
+                            pass
+                    
+                    # Build rich table metadata
+                    content_parts = [f"Table {table_number}"]
+                    if caption:
+                        content_parts.append(caption)
+                    if table_content:
+                        content_parts.append(table_content[:2000])  # Limit for embedding
+                    
+                    full_content = " | ".join(filter(None, content_parts))
+                    
+                    if full_content.strip() or image_path:
+                        elements.append(ExtractedElement(
+                            element_type=ElementType.TABLE,
+                            content=full_content if full_content.strip() else f"Table {table_number} from page {page_no}",
+                            image_path=image_path,
+                            page_number=page_no,
+                            heading=f"Table {table_number}",
+                        ))
+                        logger.info(f"Table {table_number} content: {full_content[:100]}...")
+                        table_number += 1
+            else:
+                logger.info("No tables found in doc.tables, skipping table extraction")
+        except Exception as e:
+            logger.warning(f"Error extracting tables: {e}")
+
         logger.info(f"Extracted {len(elements)} total elements from PDF")
         return elements
+
 

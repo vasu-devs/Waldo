@@ -165,19 +165,22 @@ const Message = ({ isBot, text, documents, ingestionFile }) => (
                 </div>
             )}
 
-            {/* Render only images inline - no citations */}
-            {documents && documents.filter(doc => doc.original_image_path && doc.element_type === 'figure').length > 0 && (
-                <div className="mt-4">
-                    {documents.filter(doc => doc.original_image_path && doc.element_type === 'figure').slice(0, 1).map((doc, idx) => (
+            {/* Render figures and tables with images inline - no citations */}
+            {documents && documents.filter(doc => doc.original_image_path && (doc.element_type === 'figure' || doc.element_type === 'table')).length > 0 && (
+                <div className="mt-4 space-y-3">
+                    {documents.filter(doc => doc.original_image_path && (doc.element_type === 'figure' || doc.element_type === 'table')).slice(0, 2).map((doc, idx) => (
                         <div key={idx} className="rounded-lg overflow-hidden border border-gray-200 bg-white shadow-sm">
                             <img
                                 src={`http://localhost:8000/images/${doc.original_image_path.split(/[/\\]/).pop()}`}
-                                alt={`Figure from Page ${doc.page_number}`}
+                                alt={`${doc.element_type === 'table' ? 'Table' : 'Figure'} from Page ${doc.page_number}`}
                                 className="w-full h-auto object-contain"
                                 onError={(e) => {
                                     e.target.parentElement.style.display = 'none';
                                 }}
                             />
+                            <div className="px-2 py-1 bg-gray-50 text-xs text-gray-500 border-t">
+                                {doc.element_type === 'table' ? '📊 Table' : '🖼️ Figure'} • Page {doc.page_number}
+                            </div>
                         </div>
                     ))}
                 </div>
